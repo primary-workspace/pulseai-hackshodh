@@ -1,6 +1,13 @@
 """
 Google Drive Ingestion Service for Pulse AI
-Handles downloading and processing health export ZIP files from Google Drive
+Handles downloading and processing Health Connect export ZIP files from Google Drive
+
+This service specifically handles the Health Connect SQLite schema with tables like:
+- steps_record_table
+- heart_rate_record_table + heart_rate_record_series_table
+- sleep_session_record_table
+- blood_pressure_record_table
+- etc.
 """
 
 import os
@@ -10,7 +17,7 @@ import zipfile
 import sqlite3
 import tempfile
 import httpx
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 from sqlalchemy.orm import Session
 
@@ -26,7 +33,7 @@ DRIVE_FILES_ENDPOINT = f"{DRIVE_API_BASE}/files"
 
 
 class DriveIngestionService:
-    """Service for ingesting health data from Google Drive exports"""
+    """Service for ingesting health data from Google Drive Health Connect exports"""
     
     # Expected filename patterns for Health Connect exports
     HEALTH_EXPORT_PATTERNS = [
@@ -36,22 +43,13 @@ class DriveIngestionService:
         "Google Fit.zip"
     ]
     
-    # SQLite table mappings for Health Connect data
-    # Maps Google Fit/Health Connect table names to extraction methods
-    HEALTH_TABLES = {
-        "heart_rate": "_extract_heart_rate",
-        "sleep_session": "_extract_sleep",
-        "steps": "_extract_steps",
-        "steps_count": "_extract_steps",
-        "active_calories_burned": "_extract_calories",
-        "respiratory_rate": "_extract_respiratory",
-        "blood_pressure": "_extract_blood_pressure",
-        "blood_glucose": "_extract_blood_glucose",
-    }
-    
     def __init__(self, db: Session):
         self.db = db
         self.oauth_service = GoogleOAuthService(db)
+    
+    # ==========================================
+    # Google Drive API Methods
+    # ==========================================
     
     async def list_drive_files(
         self, 
@@ -59,31 +57,17 @@ class DriveIngestionService:
         folder_id: Optional[str] = None,
         search_pattern: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """
-        List files in user's Google Drive
-        
-        Args:
-            user_id: User's ID
-            folder_id: Optional folder ID to search in
-            search_pattern: Optional filename pattern to search for
-            
-        Returns:
-            List of file metadata dictionaries
-        """
-        access_token = self.oauth_service.get_valid_access_token(user_id)
+        """List files in user's Google Drive"""
+        access_token = await self.oauth_service.get_valid_access_token(user_id)
         if not access_token:
             raise ValueError("No valid OAuth token available. Please re-authenticate.")
         
         # Build query
         query_parts = []
-        
         if folder_id:
             query_parts.append(f"'{folder_id}' in parents")
-        
         if search_pattern:
             query_parts.append(f"name contains '{search_pattern}'")
-        
-        # Only get files, not folders
         query_parts.append("mimeType != 'application/vnd.google-apps.folder'")
         query_parts.append("trashed = false")
         
@@ -110,117 +94,46 @@ class DriveIngestionService:
             return response.json().get("files", [])
     
     async def find_health_exports(self, user_id: int) -> List[Dict[str, Any]]:
-        """
-        Find Health Connect export files in user's Drive
-        
-        Args:
-            user_id: User's ID
-            
-        Returns:
-            List of health export file metadata
-        """
+        """Find Health Connect export files in user's Drive"""
         all_exports = []
         seen_ids = set()
         
-        # First, search for specific known patterns
+        # Search for specific patterns
         for pattern in self.HEALTH_EXPORT_PATTERNS:
             try:
-                # Search for the pattern without extension first
                 search_term = pattern.replace(".zip", "").replace("_", " ")
-                print(f"Searching Drive for pattern: '{search_term}'")
+                print(f"[FIND] Searching for pattern: '{search_term}'")
                 files = await self.list_drive_files(user_id, search_pattern=search_term)
-                print(f"  Found {len(files)} files matching '{search_term}'")
                 
                 for file in files:
                     file_name = file.get("name", "").lower()
                     file_id = file.get("id")
                     
-                    # Check if it's a ZIP file and we haven't seen it
                     if file_id not in seen_ids and file_name.endswith(".zip"):
                         all_exports.append(file)
                         seen_ids.add(file_id)
-                        print(f"  ✓ Added: {file.get('name')}")
-            except ValueError as e:
-                print(f"  Error searching for '{pattern}': {e}")
-                continue
+                        print(f"[FIND] ✓ Found: {file.get('name')}")
+            except Exception as e:
+                print(f"[FIND] Error searching for '{pattern}': {e}")
         
-        # Also search for generic "health" + "zip" to catch variations
+        # Also search for generic "health"
         try:
-            print("Searching Drive for 'health'...")
             files = await self.list_drive_files(user_id, search_pattern="health")
-            print(f"  Found {len(files)} files matching 'health'")
-            
             for file in files:
                 file_name = file.get("name", "").lower()
                 file_id = file.get("id")
-                
                 if file_id not in seen_ids and file_name.endswith(".zip"):
                     all_exports.append(file)
                     seen_ids.add(file_id)
-                    print(f"  ✓ Added: {file.get('name')}")
-        except ValueError as e:
-            print(f"  Error in health search: {e}")
+        except Exception:
+            pass
         
-        # Search for "fit" as well
-        try:
-            print("Searching Drive for 'fit'...")
-            files = await self.list_drive_files(user_id, search_pattern="fit")
-            print(f"  Found {len(files)} files matching 'fit'")
-            
-            for file in files:
-                file_name = file.get("name", "").lower()
-                file_id = file.get("id")
-                
-                if file_id not in seen_ids and file_name.endswith(".zip"):
-                    all_exports.append(file)
-                    seen_ids.add(file_id)
-                    print(f"  ✓ Added: {file.get('name')}")
-        except ValueError as e:
-            print(f"  Error in fit search: {e}")
-        
-        # Last resort: search for all ZIP files
-        try:
-            print("Searching Drive for all '.zip' files...")
-            files = await self.list_drive_files(user_id, search_pattern=".zip")
-            print(f"  Found {len(files)} files matching '.zip'")
-            
-            for file in files:
-                file_name = file.get("name", "").lower()
-                file_id = file.get("id")
-                
-                # Check if filename might be health-related
-                if file_id not in seen_ids and file_name.endswith(".zip"):
-                    # Check for health-related keywords
-                    health_keywords = ["health", "fit", "connect", "export", "data"]
-                    if any(kw in file_name for kw in health_keywords):
-                        all_exports.append(file)
-                        seen_ids.add(file_id)
-                        print(f"  ✓ Added (keyword match): {file.get('name')}")
-        except ValueError as e:
-            print(f"  Error in zip search: {e}")
-        
-        print(f"\nTotal health export files found: {len(all_exports)}")
-        for f in all_exports:
-            print(f"  - {f.get('name')} ({f.get('id')})")
-        
+        print(f"[FIND] Total health exports found: {len(all_exports)}")
         return all_exports
     
-    async def download_file(
-        self, 
-        user_id: int, 
-        file_id: str
-    ) -> bytes:
-        """
-        Download a file from Google Drive
-        
-        Args:
-            user_id: User's ID
-            file_id: Drive file ID
-            
-        Returns:
-            File contents as bytes
-        """
-        access_token = self.oauth_service.get_valid_access_token(user_id)
+    async def download_file(self, user_id: int, file_id: str) -> bytes:
+        """Download a file from Google Drive"""
+        access_token = await self.oauth_service.get_valid_access_token(user_id)
         if not access_token:
             raise ValueError("No valid OAuth token available")
         
@@ -237,486 +150,659 @@ class DriveIngestionService:
             
             return response.content
     
-    def is_file_already_processed(
-        self, 
-        user_id: int, 
-        file_id: str, 
-        md5_checksum: Optional[str] = None
-    ) -> bool:
-        """
-        Check if a file has already been processed (idempotency check)
-        
-        Args:
-            user_id: User's ID
-            file_id: Drive file ID
-            md5_checksum: Optional MD5 checksum to verify file hasn't changed
-            
-        Returns:
-            True if file was already processed successfully
-        """
-        existing = self.db.query(ProcessedDriveFile).filter(
-            ProcessedDriveFile.user_id == user_id,
-            ProcessedDriveFile.drive_file_id == file_id,
-            ProcessedDriveFile.status == "completed"
-        ).first()
-        
-        if not existing:
-            return False
-        
-        # If checksum provided, verify file hasn't changed
-        if md5_checksum and existing.md5_checksum != md5_checksum:
-            return False
-        
-        return True
+    # ==========================================
+    # ZIP and SQLite Processing
+    # ==========================================
     
     def extract_sqlite_from_zip(self, zip_content: bytes) -> Optional[bytes]:
-        """
-        Extract SQLite database from ZIP file
-        
-        Args:
-            zip_content: ZIP file bytes
-            
-        Returns:
-            SQLite database bytes or None if not found
-        """
+        """Extract SQLite database from ZIP file"""
         try:
             with zipfile.ZipFile(io.BytesIO(zip_content)) as zf:
-                # Look for .db files
-                for name in zf.namelist():
-                    if name.endswith(".db"):
-                        return zf.read(name)
+                # List all files in ZIP
+                all_files = zf.namelist()
+                print(f"[EXTRACT] ZIP contains {len(all_files)} entries: {all_files}")
                 
-                # Look for common database names
-                db_names = [
-                    "health_connect_export.db",
-                    "fit_data.db",
-                    "health_data.db"
-                ]
-                for db_name in db_names:
-                    if db_name in zf.namelist():
-                        return zf.read(db_name)
-        except zipfile.BadZipFile:
-            return None
+                # First priority: look for .db files specifically
+                db_files = [f for f in all_files if f.endswith('.db')]
+                print(f"[EXTRACT] Found .db files: {db_files}")
+                
+                if db_files:
+                    # Prefer health_connect_export.db if exists
+                    for db_file in db_files:
+                        if 'health' in db_file.lower():
+                            print(f"[EXTRACT] Extracting: {db_file}")
+                            content = zf.read(db_file)
+                            print(f"[EXTRACT] Extracted {len(content)} bytes")
+                            return content
+                    
+                    # Otherwise use first .db file
+                    print(f"[EXTRACT] Extracting first .db: {db_files[0]}")
+                    content = zf.read(db_files[0])
+                    print(f"[EXTRACT] Extracted {len(content)} bytes")
+                    return content
+                
+                # Fallback: look for any SQLite file by magic bytes
+                for name in all_files:
+                    if not name.endswith('/'):  # Skip directories
+                        try:
+                            content = zf.read(name)
+                            if len(content) >= 16 and content[:16] == b'SQLite format 3\x00':
+                                print(f"[EXTRACT] Found SQLite by magic: {name}")
+                                return content
+                        except Exception:
+                            continue
+                
+                print("[EXTRACT] No SQLite database found in ZIP")
+        except Exception as e:
+            import traceback
+            print(f"[EXTRACT] Error: {e}")
+            print(traceback.format_exc())
         
         return None
     
-    def parse_sqlite_database(
-        self, 
-        db_content: bytes, 
-        user_id: int
-    ) -> Dict[str, Any]:
-        """
-        Parse health data from SQLite database
-        
-        Args:
-            db_content: SQLite database bytes
-            user_id: User ID to associate data with
-            
-        Returns:
-            Dictionary with parsed health records and statistics
-        """
+    def parse_sqlite_database(self, db_content: bytes, user_id: int) -> Dict[str, Any]:
+        """Parse Health Connect SQLite database and extract health records"""
         result = {
-            "records_parsed": 0,
             "tables_found": [],
+            "records_parsed": 0,
+            "health_records": [],
             "errors": []
         }
         
-        health_records = []
-        
-        # Write to temp file for SQLite access
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+        # Write to temp file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.db') as tmp:
             tmp.write(db_content)
             tmp_path = tmp.name
         
         try:
             conn = sqlite3.connect(tmp_path)
-            conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             
-            # Get list of tables
+            # Get all tables
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
             tables = [row[0] for row in cursor.fetchall()]
             result["tables_found"] = tables
+            print(f"[PARSE] Found {len(tables)} tables")
             
-            # Process each recognized table
-            for table_name in tables:
-                for pattern, extractor_method in self.HEALTH_TABLES.items():
-                    if pattern in table_name.lower():
-                        try:
-                            extractor = getattr(self, extractor_method)
-                            records = extractor(cursor, table_name, user_id)
-                            health_records.extend(records)
-                        except Exception as e:
-                            result["errors"].append(f"Error parsing {table_name}: {str(e)}")
+            all_records = []
+            
+            # Extract from each supported table
+            # Steps
+            if "steps_record_table" in tables:
+                records = self._extract_steps(cursor, user_id)
+                all_records.extend(records)
+                print(f"[PARSE] Extracted {len(records)} step records")
+            
+            # Heart Rate (from series table)
+            if "heart_rate_record_series_table" in tables:
+                records = self._extract_heart_rate(cursor, user_id)
+                all_records.extend(records)
+                print(f"[PARSE] Extracted {len(records)} heart rate records")
+            
+            # Resting Heart Rate
+            if "resting_heart_rate_record_table" in tables:
+                records = self._extract_resting_heart_rate(cursor, user_id)
+                all_records.extend(records)
+                print(f"[PARSE] Extracted {len(records)} resting heart rate records")
+            
+            # Sleep
+            if "sleep_session_record_table" in tables:
+                records = self._extract_sleep(cursor, user_id)
+                all_records.extend(records)
+                print(f"[PARSE] Extracted {len(records)} sleep records")
+            
+            # Blood Pressure
+            if "blood_pressure_record_table" in tables:
+                records = self._extract_blood_pressure(cursor, user_id)
+                all_records.extend(records)
+                print(f"[PARSE] Extracted {len(records)} blood pressure records")
+            
+            # Blood Glucose
+            if "blood_glucose_record_table" in tables:
+                records = self._extract_blood_glucose(cursor, user_id)
+                all_records.extend(records)
+                print(f"[PARSE] Extracted {len(records)} blood glucose records")
+            
+            # Respiratory Rate
+            if "respiratory_rate_record_table" in tables:
+                records = self._extract_respiratory_rate(cursor, user_id)
+                all_records.extend(records)
+                print(f"[PARSE] Extracted {len(records)} respiratory rate records")
+            
+            # HRV
+            if "heart_rate_variability_rmssd_record_table" in tables:
+                records = self._extract_hrv(cursor, user_id)
+                all_records.extend(records)
+                print(f"[PARSE] Extracted {len(records)} HRV records")
+            
+            # Weight
+            if "weight_record_table" in tables:
+                records = self._extract_weight(cursor, user_id)
+                all_records.extend(records)
+                print(f"[PARSE] Extracted {len(records)} weight records")
+            
+            # Distance
+            if "distance_record_table" in tables:
+                records = self._extract_distance(cursor, user_id)
+                all_records.extend(records)
+                print(f"[PARSE] Extracted {len(records)} distance records")
+            
+            # Active Calories
+            if "active_calories_burned_record_table" in tables:
+                records = self._extract_active_calories(cursor, user_id)
+                all_records.extend(records)
+                print(f"[PARSE] Extracted {len(records)} active calorie records")
+            
+            # Total Calories
+            if "total_calories_burned_record_table" in tables:
+                records = self._extract_total_calories(cursor, user_id)
+                all_records.extend(records)
+                print(f"[PARSE] Extracted {len(records)} total calorie records")
+            
+            # SpO2 (Oxygen Saturation)
+            if "oxygen_saturation_record_table" in tables:
+                records = self._extract_spo2(cursor, user_id)
+                all_records.extend(records)
+                print(f"[PARSE] Extracted {len(records)} SpO2 records")
+            
+            # Body Temperature
+            if "body_temperature_record_table" in tables:
+                records = self._extract_temperature(cursor, user_id)
+                all_records.extend(records)
+                print(f"[PARSE] Extracted {len(records)} temperature records")
             
             conn.close()
+            
+            result["records_parsed"] = len(all_records)
+            result["health_records"] = all_records
+            
+        except Exception as e:
+            result["errors"].append(str(e))
+            print(f"[PARSE] Error: {e}")
         finally:
             os.unlink(tmp_path)
         
-        result["records_parsed"] = len(health_records)
-        result["health_records"] = health_records
-        
         return result
     
-    def _extract_heart_rate(
-        self, 
-        cursor: sqlite3.Cursor, 
-        table_name: str, 
-        user_id: int
-    ) -> List[Dict]:
-        """Extract heart rate records"""
+    # ==========================================
+    # Health Connect Data Extractors
+    # ==========================================
+    
+    def _extract_steps(self, cursor: sqlite3.Cursor, user_id: int) -> List[Dict]:
+        """Extract step count records from steps_record_table"""
         records = []
-        
         try:
-            cursor.execute(f"SELECT * FROM {table_name}")
-            columns = [desc[0] for desc in cursor.description]
+            cursor.execute("""
+                SELECT count, start_time, end_time 
+                FROM steps_record_table 
+                WHERE count IS NOT NULL
+            """)
             
-            for row in cursor.fetchall():
-                row_dict = dict(zip(columns, row))
-                
-                # Try to find heart rate value (various possible column names)
-                hr_value = None
-                for col in ["bpm", "value", "heart_rate", "heartRate", "beatsPerMinute"]:
-                    if col in row_dict and row_dict[col] is not None:
-                        hr_value = float(row_dict[col])
-                        break
-                
-                if hr_value is None:
-                    continue
-                
-                # Get timestamp
-                timestamp = self._parse_timestamp(row_dict)
-                
-                records.append({
-                    "user_id": user_id,
-                    "source": "google_fit_export",
-                    "timestamp": timestamp,
-                    "heart_rate": hr_value
-                })
-        except Exception:
-            pass
-        
+            rows = cursor.fetchall()
+            print(f"[EXTRACT_STEPS] Found {len(rows)} rows in steps_record_table")
+            
+            for row in rows:
+                count, start_time, end_time = row
+                print(f"[EXTRACT_STEPS] Row: count={count}, start_time={start_time}")
+                if count and count > 0:
+                    timestamp = self._millis_to_datetime(start_time)
+                    records.append({
+                        "user_id": user_id,
+                        "source": "health_connect",
+                        "timestamp": timestamp,
+                        "steps": int(count),
+                        "activity_level": float(count)  # Map to activity_level
+                    })
+        except Exception as e:
+            import traceback
+            print(f"[EXTRACT_STEPS] Error: {e}")
+            print(traceback.format_exc())
         return records
     
-    def _extract_sleep(
-        self, 
-        cursor: sqlite3.Cursor, 
-        table_name: str, 
-        user_id: int
-    ) -> List[Dict]:
-        """Extract sleep records"""
+    def _extract_heart_rate(self, cursor: sqlite3.Cursor, user_id: int) -> List[Dict]:
+        """Extract heart rate from heart_rate_record_series_table"""
         records = []
-        
         try:
-            cursor.execute(f"SELECT * FROM {table_name}")
-            columns = [desc[0] for desc in cursor.description]
+            cursor.execute("""
+                SELECT beats_per_minute, epoch_millis 
+                FROM heart_rate_record_series_table 
+                WHERE beats_per_minute IS NOT NULL
+            """)
             
             for row in cursor.fetchall():
-                row_dict = dict(zip(columns, row))
-                
-                # Try to find sleep duration
-                duration = None
-                for col in ["duration", "duration_millis", "durationMs", "totalSleepTime"]:
-                    if col in row_dict and row_dict[col] is not None:
-                        duration = float(row_dict[col])
-                        # Convert milliseconds to hours if needed
-                        if "millis" in col.lower() or "ms" in col.lower():
-                            duration = duration / (1000 * 60 * 60)
-                        break
-                
-                if duration is None:
-                    continue
-                
-                # Get timestamp
-                timestamp = self._parse_timestamp(row_dict)
-                
-                # Try to get sleep quality/stage
-                quality = None
-                for col in ["quality", "stage", "sleepStage", "sleepQuality"]:
-                    if col in row_dict and row_dict[col] is not None:
-                        quality = float(row_dict[col]) if isinstance(row_dict[col], (int, float)) else None
-                        break
-                
-                records.append({
-                    "user_id": user_id,
-                    "source": "google_fit_export",
-                    "timestamp": timestamp,
-                    "sleep_duration": duration,
-                    "sleep_quality": quality
-                })
-        except Exception:
-            pass
-        
+                bpm, epoch_millis = row
+                if bpm and bpm > 0:
+                    timestamp = self._millis_to_datetime(epoch_millis)
+                    records.append({
+                        "user_id": user_id,
+                        "source": "health_connect",
+                        "timestamp": timestamp,
+                        "heart_rate": float(bpm)
+                    })
+        except Exception as e:
+            print(f"[EXTRACT_HR] Error: {e}")
         return records
     
-    def _extract_steps(
-        self, 
-        cursor: sqlite3.Cursor, 
-        table_name: str, 
-        user_id: int
-    ) -> List[Dict]:
-        """Extract step count records"""
+    def _extract_resting_heart_rate(self, cursor: sqlite3.Cursor, user_id: int) -> List[Dict]:
+        """Extract resting heart rate from resting_heart_rate_record_table"""
         records = []
-        
         try:
-            cursor.execute(f"SELECT * FROM {table_name}")
-            columns = [desc[0] for desc in cursor.description]
+            cursor.execute("""
+                SELECT beats_per_minute, time 
+                FROM resting_heart_rate_record_table 
+                WHERE beats_per_minute IS NOT NULL
+            """)
             
             for row in cursor.fetchall():
-                row_dict = dict(zip(columns, row))
-                
-                # Try to find step count
-                steps = None
-                for col in ["steps", "count", "value", "stepCount"]:
-                    if col in row_dict and row_dict[col] is not None:
-                        steps = float(row_dict[col])
-                        break
-                
-                if steps is None:
-                    continue
-                
-                # Get timestamp
-                timestamp = self._parse_timestamp(row_dict)
-                
-                records.append({
-                    "user_id": user_id,
-                    "source": "google_fit_export",
-                    "timestamp": timestamp,
-                    "activity_level": steps  # Map steps to activity_level
-                })
-        except Exception:
-            pass
-        
+                bpm, time_val = row
+                if bpm and bpm > 0:
+                    timestamp = self._millis_to_datetime(time_val)
+                    records.append({
+                        "user_id": user_id,
+                        "source": "health_connect",
+                        "timestamp": timestamp,
+                        "heart_rate": float(bpm)
+                    })
+        except Exception as e:
+            print(f"[EXTRACT_RHR] Error: {e}")
         return records
     
-    def _extract_calories(
-        self, 
-        cursor: sqlite3.Cursor, 
-        table_name: str, 
-        user_id: int
-    ) -> List[Dict]:
-        """Extract calorie records - currently just logging, not storing separately"""
-        # Calories are not directly mapped in the current HealthData model
-        # This could be extended in the future
-        return []
-    
-    def _extract_respiratory(
-        self, 
-        cursor: sqlite3.Cursor, 
-        table_name: str, 
-        user_id: int
-    ) -> List[Dict]:
-        """Extract respiratory rate records"""
+    def _extract_sleep(self, cursor: sqlite3.Cursor, user_id: int) -> List[Dict]:
+        """Extract sleep sessions from sleep_session_record_table"""
         records = []
-        
         try:
-            cursor.execute(f"SELECT * FROM {table_name}")
-            columns = [desc[0] for desc in cursor.description]
+            cursor.execute("""
+                SELECT start_time, end_time, title, notes 
+                FROM sleep_session_record_table
+            """)
             
             for row in cursor.fetchall():
-                row_dict = dict(zip(columns, row))
-                
-                # Try to find respiratory rate
-                resp_rate = None
-                for col in ["rate", "value", "respiratoryRate", "breathsPerMinute"]:
-                    if col in row_dict and row_dict[col] is not None:
-                        resp_rate = float(row_dict[col])
-                        break
-                
-                if resp_rate is None:
-                    continue
-                
-                # Get timestamp
-                timestamp = self._parse_timestamp(row_dict)
-                
-                records.append({
-                    "user_id": user_id,
-                    "source": "google_fit_export",
-                    "timestamp": timestamp,
-                    "breathing_rate": resp_rate
-                })
-        except Exception:
-            pass
-        
+                start_time, end_time, title, notes = row
+                if start_time and end_time:
+                    # Calculate duration in hours
+                    duration_ms = end_time - start_time
+                    duration_hours = duration_ms / (1000 * 60 * 60)
+                    
+                    if duration_hours > 0 and duration_hours < 24:  # Sanity check
+                        timestamp = self._millis_to_datetime(start_time)
+                        records.append({
+                            "user_id": user_id,
+                            "source": "health_connect",
+                            "timestamp": timestamp,
+                            "sleep_duration": round(duration_hours, 2)
+                        })
+        except Exception as e:
+            print(f"[EXTRACT_SLEEP] Error: {e}")
         return records
     
-    def _extract_blood_pressure(
-        self, 
-        cursor: sqlite3.Cursor, 
-        table_name: str, 
-        user_id: int
-    ) -> List[Dict]:
-        """Extract blood pressure records"""
+    def _extract_blood_pressure(self, cursor: sqlite3.Cursor, user_id: int) -> List[Dict]:
+        """Extract blood pressure from blood_pressure_record_table"""
         records = []
-        
         try:
-            cursor.execute(f"SELECT * FROM {table_name}")
-            columns = [desc[0] for desc in cursor.description]
+            cursor.execute("""
+                SELECT systolic, diastolic, time 
+                FROM blood_pressure_record_table 
+                WHERE systolic IS NOT NULL OR diastolic IS NOT NULL
+            """)
             
             for row in cursor.fetchall():
-                row_dict = dict(zip(columns, row))
-                
-                # Try to find systolic and diastolic
-                systolic = None
-                diastolic = None
-                
-                for col in ["systolic", "systolicPressure", "sys"]:
-                    if col in row_dict and row_dict[col] is not None:
-                        systolic = float(row_dict[col])
-                        break
-                
-                for col in ["diastolic", "diastolicPressure", "dia"]:
-                    if col in row_dict and row_dict[col] is not None:
-                        diastolic = float(row_dict[col])
-                        break
-                
-                if systolic is None and diastolic is None:
-                    continue
-                
-                # Get timestamp
-                timestamp = self._parse_timestamp(row_dict)
-                
-                records.append({
-                    "user_id": user_id,
-                    "source": "google_fit_export",
-                    "timestamp": timestamp,
-                    "bp_systolic": systolic,
-                    "bp_diastolic": diastolic
-                })
-        except Exception:
-            pass
-        
+                systolic, diastolic, time_val = row
+                if systolic or diastolic:
+                    timestamp = self._millis_to_datetime(time_val)
+                    records.append({
+                        "user_id": user_id,
+                        "source": "health_connect",
+                        "timestamp": timestamp,
+                        "bp_systolic": float(systolic) if systolic else None,
+                        "bp_diastolic": float(diastolic) if diastolic else None
+                    })
+        except Exception as e:
+            print(f"[EXTRACT_BP] Error: {e}")
         return records
     
-    def _extract_blood_glucose(
-        self, 
-        cursor: sqlite3.Cursor, 
-        table_name: str, 
-        user_id: int
-    ) -> List[Dict]:
-        """Extract blood glucose records"""
+    def _extract_blood_glucose(self, cursor: sqlite3.Cursor, user_id: int) -> List[Dict]:
+        """Extract blood glucose from blood_glucose_record_table"""
         records = []
-        
         try:
-            cursor.execute(f"SELECT * FROM {table_name}")
-            columns = [desc[0] for desc in cursor.description]
+            cursor.execute("""
+                SELECT level, time 
+                FROM blood_glucose_record_table 
+                WHERE level IS NOT NULL
+            """)
             
             for row in cursor.fetchall():
-                row_dict = dict(zip(columns, row))
-                
-                # Try to find glucose level
-                glucose = None
-                for col in ["level", "value", "glucose", "bloodGlucose", "mgdl"]:
-                    if col in row_dict and row_dict[col] is not None:
-                        glucose = float(row_dict[col])
-                        break
-                
-                if glucose is None:
-                    continue
-                
-                # Get timestamp
-                timestamp = self._parse_timestamp(row_dict)
-                
-                records.append({
-                    "user_id": user_id,
-                    "source": "google_fit_export",
-                    "timestamp": timestamp,
-                    "blood_sugar": glucose
-                })
-        except Exception:
-            pass
-        
+                level, time_val = row
+                if level:
+                    timestamp = self._millis_to_datetime(time_val)
+                    records.append({
+                        "user_id": user_id,
+                        "source": "health_connect",
+                        "timestamp": timestamp,
+                        "blood_sugar": float(level)
+                    })
+        except Exception as e:
+            print(f"[EXTRACT_GLUCOSE] Error: {e}")
         return records
     
-    def _parse_timestamp(self, row_dict: Dict) -> datetime:
-        """Parse timestamp from various possible column names and formats"""
-        timestamp_cols = [
-            "timestamp", "time", "dateTime", "start_time", 
-            "startTime", "date", "created_at", "recorded_at"
-        ]
-        
-        for col in timestamp_cols:
-            if col in row_dict and row_dict[col] is not None:
-                value = row_dict[col]
-                
-                # Handle epoch milliseconds
-                if isinstance(value, (int, float)):
-                    if value > 1e12:  # Milliseconds
-                        return datetime.fromtimestamp(value / 1000)
-                    else:  # Seconds
-                        return datetime.fromtimestamp(value)
-                
-                # Handle ISO format string
-                if isinstance(value, str):
-                    try:
-                        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-                    except ValueError:
-                        try:
-                            return datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
-                        except ValueError:
-                            pass
-        
-        # Default to current time if no timestamp found
-        return datetime.utcnow()
-    
-    def save_health_records(
-        self, 
-        health_records: List[Dict]
-    ) -> int:
-        """
-        Save parsed health records to database
-        
-        Args:
-            health_records: List of health record dictionaries
+    def _extract_respiratory_rate(self, cursor: sqlite3.Cursor, user_id: int) -> List[Dict]:
+        """Extract respiratory rate from respiratory_rate_record_table"""
+        records = []
+        try:
+            cursor.execute("""
+                SELECT rate, time 
+                FROM respiratory_rate_record_table 
+                WHERE rate IS NOT NULL
+            """)
             
-        Returns:
-            Number of records saved
-        """
+            for row in cursor.fetchall():
+                rate, time_val = row
+                if rate:
+                    timestamp = self._millis_to_datetime(time_val)
+                    records.append({
+                        "user_id": user_id,
+                        "source": "health_connect",
+                        "timestamp": timestamp,
+                        "breathing_rate": float(rate)
+                    })
+        except Exception as e:
+            print(f"[EXTRACT_RESP] Error: {e}")
+        return records
+    
+    def _extract_hrv(self, cursor: sqlite3.Cursor, user_id: int) -> List[Dict]:
+        """Extract HRV from heart_rate_variability_rmssd_record_table"""
+        records = []
+        try:
+            cursor.execute("""
+                SELECT heart_rate_variability_millis, time 
+                FROM heart_rate_variability_rmssd_record_table 
+                WHERE heart_rate_variability_millis IS NOT NULL
+            """)
+            
+            for row in cursor.fetchall():
+                hrv_ms, time_val = row
+                if hrv_ms:
+                    timestamp = self._millis_to_datetime(time_val)
+                    records.append({
+                        "user_id": user_id,
+                        "source": "health_connect",
+                        "timestamp": timestamp,
+                        "hrv": float(hrv_ms)  # HRV in milliseconds
+                    })
+        except Exception as e:
+            print(f"[EXTRACT_HRV] Error: {e}")
+        return records
+    
+    def _extract_weight(self, cursor: sqlite3.Cursor, user_id: int) -> List[Dict]:
+        """Extract weight from weight_record_table"""
+        records = []
+        try:
+            cursor.execute("""
+                SELECT weight, time 
+                FROM weight_record_table 
+                WHERE weight IS NOT NULL
+            """)
+            
+            for row in cursor.fetchall():
+                weight, time_val = row
+                if weight:
+                    timestamp = self._millis_to_datetime(time_val)
+                    # Weight is stored in kilograms in Health Connect
+                    records.append({
+                        "user_id": user_id,
+                        "source": "health_connect",
+                        "timestamp": timestamp,
+                        "weight": float(weight)
+                    })
+        except Exception as e:
+            print(f"[EXTRACT_WEIGHT] Error: {e}")
+        return records
+    
+    def _extract_distance(self, cursor: sqlite3.Cursor, user_id: int) -> List[Dict]:
+        """Extract distance from distance_record_table"""
+        records = []
+        try:
+            cursor.execute("""
+                SELECT distance, start_time 
+                FROM distance_record_table 
+                WHERE distance IS NOT NULL
+            """)
+            
+            for row in cursor.fetchall():
+                distance, start_time = row
+                if distance and distance > 0:
+                    timestamp = self._millis_to_datetime(start_time)
+                    # Distance is in meters
+                    records.append({
+                        "user_id": user_id,
+                        "source": "health_connect",
+                        "timestamp": timestamp,
+                        "distance": float(distance)
+                    })
+        except Exception as e:
+            print(f"[EXTRACT_DISTANCE] Error: {e}")
+        return records
+    
+    def _extract_active_calories(self, cursor: sqlite3.Cursor, user_id: int) -> List[Dict]:
+        """Extract active calories from active_calories_burned_record_table"""
+        records = []
+        try:
+            cursor.execute("""
+                SELECT energy, start_time 
+                FROM active_calories_burned_record_table 
+                WHERE energy IS NOT NULL
+            """)
+            
+            for row in cursor.fetchall():
+                energy, start_time = row
+                if energy and energy > 0:
+                    timestamp = self._millis_to_datetime(start_time)
+                    records.append({
+                        "user_id": user_id,
+                        "source": "health_connect",
+                        "timestamp": timestamp,
+                        "calories_active": float(energy)
+                    })
+        except Exception as e:
+            print(f"[EXTRACT_ACTIVE_CALORIES] Error: {e}")
+        return records
+    
+    def _extract_total_calories(self, cursor: sqlite3.Cursor, user_id: int) -> List[Dict]:
+        """Extract total calories from total_calories_burned_record_table"""
+        records = []
+        try:
+            cursor.execute("""
+                SELECT energy, start_time 
+                FROM total_calories_burned_record_table 
+                WHERE energy IS NOT NULL
+            """)
+            
+            for row in cursor.fetchall():
+                energy, start_time = row
+                if energy and energy > 0:
+                    timestamp = self._millis_to_datetime(start_time)
+                    records.append({
+                        "user_id": user_id,
+                        "source": "health_connect",
+                        "timestamp": timestamp,
+                        "calories_total": float(energy)
+                    })
+        except Exception as e:
+            print(f"[EXTRACT_TOTAL_CALORIES] Error: {e}")
+        return records
+    
+    def _extract_spo2(self, cursor: sqlite3.Cursor, user_id: int) -> List[Dict]:
+        """Extract SpO2 from oxygen_saturation_record_table"""
+        records = []
+        try:
+            cursor.execute("""
+                SELECT percentage, time 
+                FROM oxygen_saturation_record_table 
+                WHERE percentage IS NOT NULL
+            """)
+            
+            for row in cursor.fetchall():
+                percentage, time_val = row
+                if percentage:
+                    timestamp = self._millis_to_datetime(time_val)
+                    records.append({
+                        "user_id": user_id,
+                        "source": "health_connect",
+                        "timestamp": timestamp,
+                        "spo2": float(percentage)
+                    })
+        except Exception as e:
+            print(f"[EXTRACT_SPO2] Error: {e}")
+        return records
+    
+    def _extract_temperature(self, cursor: sqlite3.Cursor, user_id: int) -> List[Dict]:
+        """Extract body temperature from body_temperature_record_table"""
+        records = []
+        try:
+            cursor.execute("""
+                SELECT temperature, time 
+                FROM body_temperature_record_table 
+                WHERE temperature IS NOT NULL
+            """)
+            
+            for row in cursor.fetchall():
+                temp, time_val = row
+                if temp:
+                    timestamp = self._millis_to_datetime(time_val)
+                    # Temperature in Celsius
+                    records.append({
+                        "user_id": user_id,
+                        "source": "health_connect",
+                        "timestamp": timestamp,
+                        "temperature": float(temp)
+                    })
+        except Exception as e:
+            print(f"[EXTRACT_TEMPERATURE] Error: {e}")
+        return records
+    
+    def _millis_to_datetime(self, millis: int) -> datetime:
+        """Convert epoch milliseconds to datetime"""
+        if millis is None:
+            return datetime.utcnow()
+        try:
+            # Health Connect uses milliseconds
+            if millis > 1e12:
+                return datetime.fromtimestamp(millis / 1000)
+            else:
+                return datetime.fromtimestamp(millis)
+        except Exception:
+            return datetime.utcnow()
+    
+    # ==========================================
+    # Database Storage
+    # ==========================================
+    
+    def save_health_records(self, records: List[Dict]) -> int:
+        """Save extracted health records to database"""
         saved_count = 0
         
-        for record in health_records:
-            health_data = HealthData(
-                user_id=record.get("user_id"),
-                source=record.get("source", "google_fit_export"),
-                timestamp=record.get("timestamp", datetime.utcnow()),
-                heart_rate=record.get("heart_rate"),
-                hrv=record.get("hrv"),
-                sleep_duration=record.get("sleep_duration"),
-                sleep_quality=record.get("sleep_quality"),
-                activity_level=record.get("activity_level"),
-                breathing_rate=record.get("breathing_rate"),
-                bp_systolic=record.get("bp_systolic"),
-                bp_diastolic=record.get("bp_diastolic"),
-                blood_sugar=record.get("blood_sugar")
-            )
-            
-            self.db.add(health_data)
-            saved_count += 1
+        for record in records:
+            try:
+                # Create HealthData entry with all available fields
+                health_data = HealthData(
+                    user_id=record.get("user_id"),
+                    timestamp=record.get("timestamp", datetime.utcnow()),
+                    source=record.get("source", "health_connect"),
+                    # Activity
+                    steps=record.get("steps"),
+                    distance=record.get("distance"),
+                    calories_active=record.get("calories_active"),
+                    calories_total=record.get("calories_total"),
+                    activity_level=record.get("activity_level"),
+                    # Vitals
+                    heart_rate=record.get("heart_rate"),
+                    hrv=record.get("hrv"),
+                    breathing_rate=record.get("breathing_rate"),
+                    spo2=record.get("spo2"),
+                    temperature=record.get("temperature"),
+                    # Sleep
+                    sleep_duration=record.get("sleep_duration"),
+                    # Blood
+                    bp_systolic=record.get("bp_systolic"),
+                    bp_diastolic=record.get("bp_diastolic"),
+                    blood_sugar=record.get("blood_sugar"),
+                    # Body
+                    weight=record.get("weight")
+                )
+                
+                self.db.add(health_data)
+                saved_count += 1
+                
+                # Commit in batches
+                if saved_count % 100 == 0:
+                    self.db.commit()
+                    
+            except Exception as e:
+                import traceback
+                print(f"[SAVE] Error saving record: {e}")
+                print(traceback.format_exc())
+                continue
         
+        # Final commit
         self.db.commit()
+        print(f"[SAVE] Saved {saved_count} records to database")
         return saved_count
+    
+    # ==========================================
+    # Idempotency and File Tracking
+    # ==========================================
+    
+    def is_file_already_processed(
+        self, 
+        user_id: int, 
+        drive_file_id: str, 
+        md5_checksum: Optional[str] = None
+    ) -> bool:
+        """Check if a file has already been processed successfully"""
+        query = self.db.query(ProcessedDriveFile).filter(
+            ProcessedDriveFile.user_id == user_id,
+            ProcessedDriveFile.drive_file_id == drive_file_id
+        )
+        
+        existing = query.first()
+        
+        if existing:
+            print(f"[IDEMPOTENCY] Found existing record: status={existing.status}, records={existing.records_imported}")
+            
+            # Only skip if completed AND actually imported records
+            if existing.status == "completed" and existing.records_imported and existing.records_imported > 0:
+                if md5_checksum and existing.md5_checksum == md5_checksum:
+                    print(f"[IDEMPOTENCY] Skipping - same checksum, already imported {existing.records_imported} records")
+                    return True
+                elif not md5_checksum:
+                    print(f"[IDEMPOTENCY] Skipping - no checksum, already imported {existing.records_imported} records")
+                    return True
+            else:
+                # Delete failed/empty record to allow reprocessing
+                print(f"[IDEMPOTENCY] Deleting previous failed/empty record for reprocessing")
+                self.db.delete(existing)
+                self.db.commit()
+        
+        return False
+    
+    # ==========================================
+    # Main Processing Pipeline
+    # ==========================================
     
     async def process_drive_file(
         self, 
         user_id: int, 
         file_metadata: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """
-        Process a single Drive file (full pipeline)
-        
-        Args:
-            user_id: User's ID
-            file_metadata: File metadata from Drive API
-            
-        Returns:
-            Processing result
-        """
+        """Process a single Drive file (full pipeline)"""
         file_id = file_metadata.get("id")
         file_name = file_metadata.get("name")
         md5_checksum = file_metadata.get("md5Checksum")
         
+        print(f"[PROCESS] Starting: {file_name}")
+        
         # Idempotency check
         if self.is_file_already_processed(user_id, file_id, md5_checksum):
+            print(f"[PROCESS] Skipping (already processed): {file_name}")
             return {
                 "status": "skipped",
                 "reason": "File already processed",
@@ -739,9 +825,12 @@ class DriveIngestionService:
         
         try:
             # Download ZIP file
+            print(f"[PROCESS] Downloading...")
             zip_content = await self.download_file(user_id, file_id)
+            print(f"[PROCESS] Downloaded {len(zip_content)} bytes")
             
             # Extract SQLite database
+            print(f"[PROCESS] Extracting SQLite...")
             db_content = self.extract_sqlite_from_zip(zip_content)
             if not db_content:
                 processed_file.status = "failed"
@@ -753,10 +842,14 @@ class DriveIngestionService:
                     "file_id": file_id
                 }
             
+            print(f"[PROCESS] Extracted {len(db_content)} bytes")
+            
             # Parse health data
+            print(f"[PROCESS] Parsing database...")
             parse_result = self.parse_sqlite_database(db_content, user_id)
             
             # Save health records
+            print(f"[PROCESS] Saving {len(parse_result.get('health_records', []))} records...")
             records_saved = self.save_health_records(parse_result.get("health_records", []))
             
             # Update processing record
@@ -764,17 +857,23 @@ class DriveIngestionService:
             processed_file.records_imported = records_saved
             self.db.commit()
             
+            print(f"[PROCESS] ✓ Complete: {records_saved} records saved")
+            
             return {
                 "status": "completed",
                 "file_id": file_id,
                 "file_name": file_name,
                 "tables_found": parse_result.get("tables_found", []),
                 "records_parsed": parse_result.get("records_parsed", 0),
-                "records_saved": records_saved,
-                "errors": parse_result.get("errors", [])
+                "records_saved": records_saved
             }
             
         except Exception as e:
+            import traceback
+            error_trace = traceback.format_exc()
+            print(f"[PROCESS] Error: {e}")
+            print(error_trace)
+            
             processed_file.status = "failed"
             processed_file.error_message = str(e)
             self.db.commit()
@@ -786,44 +885,58 @@ class DriveIngestionService:
             }
     
     async def sync_from_drive(self, user_id: int) -> Dict[str, Any]:
-        """
-        Full sync: Find and process all health exports from Drive
+        """Full sync: Find and process all health exports from Drive"""
+        print(f"[SYNC] Starting sync for user {user_id}")
         
-        Args:
-            user_id: User's ID
-            
-        Returns:
-            Sync results summary
-        """
         # Create ingestion job
-        job = IngestionJob(
-            user_id=user_id,
-            job_type="drive_sync",
-            status="processing"
-        )
-        self.db.add(job)
-        self.db.commit()
+        try:
+            job = IngestionJob(
+                user_id=user_id,
+                job_type="drive_sync",
+                status="processing"
+            )
+            self.db.add(job)
+            self.db.commit()
+            print(f"[SYNC] Created job {job.id}")
+        except Exception as e:
+            print(f"[SYNC] Failed to create job: {e}")
+            return {"status": "failed", "error": f"Failed to create job: {str(e)}"}
         
         try:
             # Find health export files
+            print(f"[SYNC] Finding health exports...")
             export_files = await self.find_health_exports(user_id)
+            print(f"[SYNC] Found {len(export_files)} export files")
+            
             job.files_found = len(export_files)
             
             results = []
             total_records = 0
             
-            for file_meta in export_files:
-                result = await self.process_drive_file(user_id, file_meta)
-                results.append(result)
+            for i, file_meta in enumerate(export_files):
+                print(f"[SYNC] Processing file {i+1}/{len(export_files)}: {file_meta.get('name')}")
                 
-                if result.get("status") == "completed":
-                    job.files_processed += 1
-                    total_records += result.get("records_saved", 0)
+                try:
+                    result = await self.process_drive_file(user_id, file_meta)
+                    results.append(result)
+                    
+                    if result.get("status") == "completed":
+                        job.files_processed += 1
+                        total_records += result.get("records_saved", 0)
+                except Exception as e:
+                    print(f"[SYNC] Error processing {file_meta.get('name')}: {e}")
+                    results.append({
+                        "status": "failed",
+                        "error": str(e),
+                        "file_name": file_meta.get('name')
+                    })
             
             job.records_imported = total_records
             job.status = "completed"
             job.completed_at = datetime.utcnow()
             self.db.commit()
+            
+            print(f"[SYNC] ✓ Completed: {len(export_files)} files, {job.files_processed} processed, {total_records} records")
             
             return {
                 "job_id": job.id,
@@ -835,6 +948,10 @@ class DriveIngestionService:
             }
             
         except Exception as e:
+            import traceback
+            print(f"[SYNC] Failed: {e}")
+            print(traceback.format_exc())
+            
             job.status = "failed"
             job.error_message = str(e)
             job.completed_at = datetime.utcnow()

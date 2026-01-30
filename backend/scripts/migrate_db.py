@@ -103,6 +103,7 @@ def run_migration():
                     user_id INTEGER NOT NULL REFERENCES users(id),
                     drive_file_id VARCHAR NOT NULL,
                     file_name VARCHAR,
+                    file_mime_type VARCHAR,
                     file_size BIGINT,
                     md5_checksum VARCHAR,
                     status VARCHAR DEFAULT 'pending',
@@ -114,6 +115,14 @@ def run_migration():
             """))
             conn.commit()
             print("✓ Created 'processed_drive_files' table")
+        else:
+            # Check if file_mime_type exists
+            existing_cols = [col['name'] for col in inspector.get_columns('processed_drive_files')]
+            if 'file_mime_type' not in existing_cols:
+                print("Adding 'file_mime_type' column to processed_drive_files...")
+                conn.execute(text("ALTER TABLE processed_drive_files ADD COLUMN file_mime_type VARCHAR"))
+                conn.commit()
+                print("✓ Added 'file_mime_type' column")
         
         # Ingestion Jobs table
         if 'ingestion_jobs' not in existing_tables:
@@ -129,11 +138,20 @@ def run_migration():
                     files_found INTEGER DEFAULT 0,
                     files_processed INTEGER DEFAULT 0,
                     records_imported INTEGER DEFAULT 0,
-                    error_message TEXT
+                    error_message TEXT,
+                    error_details TEXT
                 )
             """))
             conn.commit()
             print("✓ Created 'ingestion_jobs' table")
+        else:
+            # Check if error_details column exists
+            existing_cols = [col['name'] for col in inspector.get_columns('ingestion_jobs')]
+            if 'error_details' not in existing_cols:
+                print("Adding 'error_details' column to ingestion_jobs...")
+                conn.execute(text("ALTER TABLE ingestion_jobs ADD COLUMN error_details TEXT"))
+                conn.commit()
+                print("✓ Added 'error_details' column")
         
         # API Keys table
         if 'api_keys' not in existing_tables:
@@ -201,16 +219,51 @@ def run_migration():
                 CREATE TABLE escalations (
                     id SERIAL PRIMARY KEY,
                     user_id INTEGER NOT NULL REFERENCES users(id),
-                    level INTEGER NOT NULL,
-                    message TEXT,
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    acknowledged BOOLEAN DEFAULT FALSE,
-                    acknowledged_at TIMESTAMP,
+                    level INTEGER DEFAULT 1,
+                    care_score_id INTEGER REFERENCES care_scores(id),
+                    title VARCHAR,
+                    message TEXT,
+                    health_summary TEXT,
+                    acknowledged INTEGER DEFAULT 0,
                     action_taken VARCHAR
                 )
             """))
             conn.commit()
             print("✓ Created 'escalations' table")
+        else:
+            # Check for missing columns
+            existing_cols = [col['name'] for col in inspector.get_columns('escalations')]
+            
+            if 'title' not in existing_cols:
+                print("Adding 'title' column to escalations...")
+                conn.execute(text("ALTER TABLE escalations ADD COLUMN title VARCHAR"))
+                conn.commit()
+            
+            if 'care_score_id' not in existing_cols:
+                print("Adding 'care_score_id' column to escalations...")
+                conn.execute(text("ALTER TABLE escalations ADD COLUMN care_score_id INTEGER"))
+                conn.commit()
+            
+            if 'health_summary' not in existing_cols:
+                print("Adding 'health_summary' column to escalations...")
+                conn.execute(text("ALTER TABLE escalations ADD COLUMN health_summary TEXT"))
+                conn.commit()
+            
+            # Fix acknowledged column type (BOOLEAN -> INTEGER)
+            # PostgreSQL doesn't have a simple way to check column type, so we try the alter
+            try:
+                print("Attempting to fix 'acknowledged' column type to INTEGER...")
+                conn.execute(text("""
+                    ALTER TABLE escalations 
+                    ALTER COLUMN acknowledged TYPE INTEGER USING CASE WHEN acknowledged THEN 1 ELSE 0 END
+                """))
+                conn.commit()
+                print("✓ Fixed 'acknowledged' column type")
+            except Exception as e:
+                # Column might already be INTEGER, which is fine
+                conn.rollback()
+                print(f"Note: acknowledged column type unchanged (may already be correct): {e}")
         
         # Health Data table
         if 'health_data' not in existing_tables:
@@ -238,6 +291,26 @@ def run_migration():
             """))
             conn.commit()
             print("✓ Created 'health_data' table")
+        else:
+            # Add new columns to existing health_data table
+            existing_cols = [col['name'] for col in inspector.get_columns('health_data')]
+            
+            new_columns = [
+                ('steps', 'INTEGER'),
+                ('distance', 'FLOAT'),
+                ('calories_active', 'FLOAT'),
+                ('calories_total', 'FLOAT'),
+                ('spo2', 'FLOAT'),
+                ('temperature', 'FLOAT'),
+                ('weight', 'FLOAT')
+            ]
+            
+            for col_name, col_type in new_columns:
+                if col_name not in existing_cols:
+                    print(f"Adding '{col_name}' column to health_data...")
+                    conn.execute(text(f"ALTER TABLE health_data ADD COLUMN {col_name} {col_type}"))
+                    conn.commit()
+                    print(f"✓ Added '{col_name}' column")
     
     print("\n✓ Database migration completed successfully!")
 

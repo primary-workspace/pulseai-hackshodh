@@ -215,7 +215,7 @@ class GoogleOAuthService:
         
         return oauth_token
     
-    def get_valid_access_token(self, user_id: int) -> Optional[str]:
+    async def get_valid_access_token(self, user_id: int) -> Optional[str]:
         """
         Get a valid access token for a user, refreshing if necessary
         
@@ -237,12 +237,7 @@ class GoogleOAuthService:
             # Try to refresh
             if token.refresh_token:
                 try:
-                    import asyncio
-                    loop = asyncio.new_event_loop()
-                    new_tokens = loop.run_until_complete(
-                        self.refresh_access_token(token.refresh_token)
-                    )
-                    loop.close()
+                    new_tokens = await self.refresh_access_token(token.refresh_token)
                     
                     # Update stored token
                     token.access_token = new_tokens.get("access_token")

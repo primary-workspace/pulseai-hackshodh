@@ -46,10 +46,10 @@ async def get_dashboard_summary(
         HealthData.user_id == user_id
     ).order_by(HealthData.timestamp.desc()).first()
     
-    # Get active escalations
+    # Get active escalations (acknowledged is INTEGER: 0=not acknowledged)
     active_escalations = db.query(Escalation).filter(
         Escalation.user_id == user_id,
-        Escalation.acknowledged == False
+        Escalation.acknowledged == 0
     ).order_by(Escalation.timestamp.desc()).all()
     
     # Get CareScore history (last 7 days)
@@ -377,13 +377,13 @@ async def get_user_escalations(
     query = db.query(Escalation).filter(Escalation.user_id == user_id)
     
     if not include_acknowledged:
-        query = query.filter(Escalation.acknowledged == False)
+        query = query.filter(Escalation.acknowledged == 0)
     
     escalations = query.order_by(Escalation.timestamp.desc()).all()
     
     return {
         "user_id": user_id,
-        "active_count": len([e for e in escalations if not e.acknowledged]),
+        "active_count": len([e for e in escalations if e.acknowledged == 0]),
         "escalations": [
             {
                 "id": e.id,

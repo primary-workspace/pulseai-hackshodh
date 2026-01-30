@@ -15,20 +15,35 @@ class HealthData(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
-    source = Column(String, default="wearable")  # wearable, manual, smart_ring
+    source = Column(String, default="wearable")  # wearable, manual, health_connect
     
-    # Wearable data
-    heart_rate = Column(Float, nullable=True)
+    # Activity data
+    steps = Column(Integer, nullable=True)  # Step count
+    distance = Column(Float, nullable=True)  # Distance in meters
+    calories_active = Column(Float, nullable=True)  # Active calories burned
+    calories_total = Column(Float, nullable=True)  # Total calories burned
+    activity_level = Column(Float, nullable=True)  # Active minutes or general activity
+    
+    # Vital signs
+    heart_rate = Column(Float, nullable=True)  # BPM
     hrv = Column(Float, nullable=True)  # Heart Rate Variability in ms
+    breathing_rate = Column(Float, nullable=True)  # Breaths per minute
+    spo2 = Column(Float, nullable=True)  # Oxygen saturation percentage
+    temperature = Column(Float, nullable=True)  # Body temperature in Celsius
+    
+    # Sleep data
     sleep_duration = Column(Float, nullable=True)  # Hours
     sleep_quality = Column(Float, nullable=True)  # 0-100 score
-    activity_level = Column(Float, nullable=True)  # Steps or active minutes
-    breathing_rate = Column(Float, nullable=True)  # Breaths per minute
     
-    # Manual inputs
+    # Blood metrics
     bp_systolic = Column(Float, nullable=True)
     bp_diastolic = Column(Float, nullable=True)
     blood_sugar = Column(Float, nullable=True)  # mg/dL
+    
+    # Body metrics
+    weight = Column(Float, nullable=True)  # Weight in kg
+    
+    # Manual inputs
     symptoms = Column(Text, nullable=True)  # JSON array of symptoms
     
     # Computed flags
@@ -36,3 +51,4 @@ class HealthData(Base):
     
     # Relationship
     user = relationship("User", back_populates="health_data")
+

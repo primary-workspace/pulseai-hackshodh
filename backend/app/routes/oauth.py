@@ -280,7 +280,7 @@ async def debug_drive_files(
             "created_at": str(stored_token.created_at) if stored_token.created_at else None
         }
     
-    access_token = oauth_service.get_valid_access_token(user_id)
+    access_token = await oauth_service.get_valid_access_token(user_id)
     
     if not access_token:
         return {
@@ -452,7 +452,19 @@ async def sync_from_drive(
         result = await drive_service.sync_from_drive(request.user_id)
         return result
     except ValueError as e:
+        import traceback
+        print(f"Sync ValueError: {str(e)}")
+        print(traceback.format_exc())
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"Sync Error: {str(e)}")
+        print(error_detail)
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Sync failed: {str(e)}. Check server logs for details."
+        )
 
 
 @router.post("/drive/process-file")
