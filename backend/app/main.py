@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db, init_db
-from app.routes import health, analysis, escalation, users, webhook, auth, dashboard
+from app.routes import health, analysis, escalation, users, webhook, auth, dashboard, oauth
 from app.services.synthetic_data import SyntheticDataGenerator
 from app.services.gemini_service import GeminiService
 
@@ -30,6 +30,9 @@ app.add_middleware(
         "http://localhost:3000",
         "http://127.0.0.1:3000",
         "http://localhost:3001",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",
         "*"  # For development - restrict in production
     ],
     allow_credentials=True,
@@ -51,6 +54,7 @@ app.include_router(escalation.router)
 app.include_router(webhook.router)    # Health Connect webhook
 app.include_router(auth.router)       # Authentication & API keys
 app.include_router(dashboard.router)  # Dashboard data endpoints
+app.include_router(oauth.router)      # Google OAuth & Drive ingestion
 
 
 @app.on_event("startup")
