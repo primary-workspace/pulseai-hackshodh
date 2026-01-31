@@ -118,7 +118,7 @@ export const LandingPage = () => {
               className="text-5xl md:text-8xl font-display font-bold tracking-tighter leading-[1.1] mb-6 text-zinc-900"
             >
               Detect health anomalies <br />
-              <span className="text-[#4988C4]">before they become crises.</span>
+              <span className="text-[#4988C4]">before they become crisis.</span>
             </motion.h1>
 
             <motion.p
