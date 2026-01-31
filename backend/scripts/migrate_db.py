@@ -311,6 +311,132 @@ def run_migration():
                     conn.execute(text(f"ALTER TABLE health_data ADD COLUMN {col_name} {col_type}"))
                     conn.commit()
                     print(f"✓ Added '{col_name}' column")
+        
+        # ============================================
+        # Multi-Role Support Tables
+        # ============================================
+        
+        # Add role columns to users table
+        if 'users' in existing_tables:
+            existing_columns = [col['name'] for col in inspector.get_columns('users')]
+            
+            role_columns = [
+                ('role', "VARCHAR DEFAULT 'patient'"),
+                ('role_verified', 'BOOLEAN DEFAULT FALSE'),
+                ('phone', 'VARCHAR')
+            ]
+            
+            for col_name, col_type in role_columns:
+                if col_name not in existing_columns:
+                    print(f"Adding '{col_name}' column to users...")
+                    conn.execute(text(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}"))
+                    conn.commit()
+                    print(f"✓ Added '{col_name}' column")
+        
+        # Doctor Profiles table
+        if 'doctor_profiles' not in existing_tables:
+            print("Creating 'doctor_profiles' table...")
+            conn.execute(text("""
+                CREATE TABLE doctor_profiles (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER UNIQUE NOT NULL REFERENCES users(id),
+                    full_name VARCHAR NOT NULL,
+                    specialization VARCHAR NOT NULL,
+                    qualification VARCHAR,
+                    hospital_name VARCHAR,
+                    hospital_address TEXT,
+                    city VARCHAR,
+                    state VARCHAR,
+                    country VARCHAR DEFAULT 'India',
+                    emergency_contact VARCHAR,
+                    consultation_hours VARCHAR,
+                    license_number VARCHAR,
+                    is_verified BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            conn.commit()
+            print("✓ Created 'doctor_profiles' table")
+        
+        # Caretaker Profiles table
+        if 'caretaker_profiles' not in existing_tables:
+            print("Creating 'caretaker_profiles' table...")
+            conn.execute(text("""
+                CREATE TABLE caretaker_profiles (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER UNIQUE NOT NULL REFERENCES users(id),
+                    full_name VARCHAR NOT NULL,
+                    relationship_type VARCHAR,
+                    phone_number VARCHAR,
+                    notification_preference VARCHAR DEFAULT 'all',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            conn.commit()
+            print("✓ Created 'caretaker_profiles' table")
+        
+        # Patient-Doctor relationships table
+        if 'patient_doctors' not in existing_tables:
+            print("Creating 'patient_doctors' table...")
+            conn.execute(text("""
+                CREATE TABLE patient_doctors (
+                    id SERIAL PRIMARY KEY,
+                    patient_id INTEGER NOT NULL REFERENCES users(id),
+                    doctor_id INTEGER NOT NULL REFERENCES users(id),
+                    status VARCHAR DEFAULT 'pending',
+                    requested_by VARCHAR,
+                    requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    accepted_at TIMESTAMP,
+                    patient_notes VARCHAR,
+                    doctor_notes VARCHAR,
+                    UNIQUE(patient_id, doctor_id)
+                )
+            """))
+            conn.commit()
+            print("✓ Created 'patient_doctors' table")
+        
+        # Patient-Caretaker relationships table
+        if 'patient_caretakers' not in existing_tables:
+            print("Creating 'patient_caretakers' table...")
+            conn.execute(text("""
+                CREATE TABLE patient_caretakers (
+                    id SERIAL PRIMARY KEY,
+                    patient_id INTEGER NOT NULL REFERENCES users(id),
+                    caretaker_id INTEGER NOT NULL REFERENCES users(id),
+                    status VARCHAR DEFAULT 'pending',
+                    access_level VARCHAR DEFAULT 'read',
+                    invited_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    accepted_at TIMESTAMP,
+                    invitation_code VARCHAR,
+                    UNIQUE(patient_id, caretaker_id)
+                )
+            """))
+            conn.commit()
+            print("✓ Created 'patient_caretakers' table")
+        
+        # Notifications table
+        if 'notifications' not in existing_tables:
+            print("Creating 'notifications' table...")
+            conn.execute(text("""
+                CREATE TABLE notifications (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(id),
+                    notification_type VARCHAR NOT NULL,
+                    title VARCHAR NOT NULL,
+                    message TEXT,
+                    related_user_id INTEGER REFERENCES users(id),
+                    related_care_score_id INTEGER,
+                    is_read BOOLEAN DEFAULT FALSE,
+                    is_dismissed BOOLEAN DEFAULT FALSE,
+                    priority VARCHAR DEFAULT 'normal',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    read_at TIMESTAMP
+                )
+            """))
+            conn.commit()
+            print("✓ Created 'notifications' table")
     
     print("\n✓ Database migration completed successfully!")
 

@@ -272,6 +272,16 @@ class CareScoreEngine:
         self.db.commit()
         self.db.refresh(care_score_record)
         
+        # Trigger notifications if necessary
+        # Only notify for moderate or high risk
+        if care_score_record.care_score >= 31:
+            from app.services.notification_service import NotificationService
+            notification_service = NotificationService(self.db)
+            notification_service.notify_anomaly_detected(
+                patient_id=user_id,
+                care_score=care_score_record
+            )
+        
         return care_score_record
     
     def _get_historical_std(self, user_id: int, days: int = 30) -> Dict[str, float]:

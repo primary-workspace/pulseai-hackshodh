@@ -1,4 +1,4 @@
-import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
+import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
 import { DashboardLayout } from "./components/DashboardLayout";
 import { LandingPage } from "./pages/LandingPage";
 import { Dashboard } from "./pages/Dashboard";
@@ -9,6 +9,11 @@ import { Settings } from "./pages/Settings";
 import { Login } from "./pages/Login";
 import { Signup } from "./pages/Signup";
 import { DriveSync } from "./pages/DriveSync";
+import { RoleSelection } from "./pages/RoleSelection";
+import { DoctorSignup } from "./pages/DoctorSignup";
+import { CaretakerSignup } from "./pages/CaretakerSignup";
+import { DoctorDashboard } from "./pages/DoctorDashboard";
+import { CaretakerDashboard } from "./pages/CaretakerDashboard";
 
 function App() {
   return (
@@ -19,7 +24,14 @@ function App() {
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
 
-        {/* Protected App Routes */}
+        {/* Role Selection & Role-Specific Signup */}
+        <Route path="/get-started" element={<RoleSelection />} />
+        <Route path="/role-select" element={<RoleSelection />} />
+        <Route path="/signup/patient" element={<Signup />} />
+        <Route path="/signup/doctor" element={<DoctorSignup />} />
+        <Route path="/signup/caretaker" element={<CaretakerSignup />} />
+
+        {/* Patient Dashboard Routes */}
         <Route
           path="/dashboard"
           element={
@@ -68,6 +80,15 @@ function App() {
             </DashboardLayout>
           }
         />
+
+        {/* Doctor Routes */}
+        <Route path="/doctor-dashboard" element={<DoctorDashboard />} />
+
+        {/* Caretaker Routes */}
+        <Route path="/caretaker-dashboard" element={<CaretakerDashboard />} />
+
+        {/* Fallback */}
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Router>
   );

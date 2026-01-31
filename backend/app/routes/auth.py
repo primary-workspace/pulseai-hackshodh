@@ -289,3 +289,228 @@ async def onboard_user(
             }
         }
     }
+
+
+# ============================================
+# Role-Based Registration
+# ============================================
+
+class PatientRegisterRequest(BaseModel):
+    email: str
+    name: str
+    age: Optional[int] = None
+    gender: Optional[str] = None
+    phone: Optional[str] = None
+
+
+class DoctorRegisterRequest(BaseModel):
+    email: str
+    name: str
+    phone: Optional[str] = None
+    # Doctor profile fields
+    full_name: str
+    specialization: str
+    qualification: Optional[str] = None
+    hospital_name: Optional[str] = None
+    hospital_address: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    country: str = "India"
+    emergency_contact: Optional[str] = None
+    license_number: Optional[str] = None
+
+
+class CaretakerRegisterRequest(BaseModel):
+    email: str
+    name: str
+    phone: Optional[str] = None
+    # Caretaker profile fields
+    full_name: str
+    relationship_type: Optional[str] = None
+    phone_number: Optional[str] = None
+
+
+@router.post("/register/patient")
+async def register_patient(
+    request: PatientRegisterRequest,
+    db: Session = Depends(get_db)
+):
+    """Register a new patient user"""
+    # Check if user already exists
+    existing = db.query(User).filter(User.email == request.email).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    # Create user
+    user = User(
+        email=request.email,
+        name=request.name,
+        age=request.age,
+        gender=request.gender,
+        phone=request.phone,
+        role="patient",
+        is_active=True
+    )
+    
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    
+    return {
+        "success": True,
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "name": user.name,
+            "role": user.role
+        },
+        "redirect": "/dashboard"
+    }
+
+
+@router.post("/register/doctor")
+async def register_doctor(
+    request: DoctorRegisterRequest,
+    db: Session = Depends(get_db)
+):
+    """Register a new doctor with extended profile"""
+    from app.models.doctor_profile import DoctorProfile
+    
+    # Check if user already exists
+    existing = db.query(User).filter(User.email == request.email).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    # Create user
+    user = User(
+        email=request.email,
+        name=request.name,
+        phone=request.phone,
+        role="doctor",
+        is_active=True
+    )
+    
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    
+    # Create doctor profile
+    doctor_profile = DoctorProfile(
+        user_id=user.id,
+        full_name=request.full_name,
+        specialization=request.specialization,
+        qualification=request.qualification,
+        hospital_name=request.hospital_name,
+        hospital_address=request.hospital_address,
+        city=request.city,
+        state=request.state,
+        country=request.country,
+        emergency_contact=request.emergency_contact,
+        license_number=request.license_number
+    )
+    
+    db.add(doctor_profile)
+    db.commit()
+    
+    return {
+        "success": True,
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "name": user.name,
+            "role": user.role
+        },
+        "doctor_profile_id": doctor_profile.id,
+        "redirect": "/doctor-dashboard"
+    }
+
+
+@router.post("/register/caretaker")
+async def register_caretaker(
+    request: CaretakerRegisterRequest,
+    db: Session = Depends(get_db)
+):
+    """Register a new caretaker user"""
+    from app.models.caretaker_profile import CaretakerProfile
+    
+    # Check if user already exists
+    existing = db.query(User).filter(User.email == request.email).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    # Create user
+    user = User(
+        email=request.email,
+        name=request.name,
+        phone=request.phone,
+        role="caretaker",
+        is_active=True
+    )
+    
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    
+    # Create caretaker profile
+    caretaker_profile = CaretakerProfile(
+        user_id=user.id,
+        full_name=request.full_name,
+        relationship_type=request.relationship_type,
+        phone_number=request.phone_number or request.phone
+    )
+    
+    db.add(caretaker_profile)
+    db.commit()
+    
+    return {
+        "success": True,
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "name": user.name,
+            "role": user.role
+        },
+        "caretaker_profile_id": caretaker_profile.id,
+        "redirect": "/caretaker-dashboard"
+    }
+
+
+@router.get("/user/{user_id}/role")
+async def get_user_role(
+    user_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get user role and profile info"""
+    user = db.query(User).filter(User.id == user_id).first()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    response = {
+        "user_id": user.id,
+        "role": user.role or "patient",
+        "name": user.name,
+        "email": user.email
+    }
+    
+    # Add role-specific profile
+    if user.role == "doctor":
+        from app.models.doctor_profile import DoctorProfile
+        profile = db.query(DoctorProfile).filter(DoctorProfile.user_id == user_id).first()
+        if profile:
+            response["doctor_profile"] = {
+                "id": profile.id,
+                "specialization": profile.specialization,
+                "hospital_name": profile.hospital_name,
+                "is_verified": profile.is_verified
+            }
+    elif user.role == "caretaker":
+        from app.models.caretaker_profile import CaretakerProfile
+        profile = db.query(CaretakerProfile).filter(CaretakerProfile.user_id == user_id).first()
+        if profile:
+            response["caretaker_profile"] = {
+                "id": profile.id,
+                "relationship_type": profile.relationship_type
+            }
+    
+    return response

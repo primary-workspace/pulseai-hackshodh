@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { dashboardService, authService, DashboardSummary, TrendData } from "../lib/api";
-import { generateSimulationData, calculateCareScore, AnalysisResult, HealthMetric } from "../lib/simulation";
+import { generateSimulationData, calculateCareScore, AnalysisResult } from "../lib/simulation";
 import { Card, CardHeader, CardTitle, CardValue } from "../components/ui/Card";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 import { Activity, ShieldCheck, TrendingUp, AlertCircle, ArrowRight, RefreshCw, Cloud } from "lucide-react";
@@ -22,7 +22,6 @@ export const Dashboard = () => {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isUsingRealData, setIsUsingRealData] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const userId = authService.getUserId();
 
@@ -32,7 +31,6 @@ export const Dashboard = () => {
 
   const loadDashboardData = async () => {
     setIsLoading(true);
-    setError(null);
 
     try {
       if (userId) {
@@ -361,6 +359,57 @@ export const Dashboard = () => {
           </div>
         </Card>
       )}
+      {/* Care Team Section */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <Card>
+          <CardHeader>
+            <CardTitle>Your Care Team</CardTitle>
+          </CardHeader>
+          <div className="space-y-4">
+            {/* This would be populated from API */}
+            <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-600 font-bold">
+                  D
+                </div>
+                <div>
+                  <p className="font-medium text-gray-900">Dr. Sarah Chen</p>
+                  <p className="text-xs text-gray-500">Cardiologist</p>
+                </div>
+              </div>
+              <span className="text-xs px-2 py-1 bg-green-100 text-green-700 rounded-full">Connected</span>
+            </div>
+
+            <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold">
+                  M
+                </div>
+                <div>
+                  <p className="font-medium text-gray-900">Mark Doe</p>
+                  <p className="text-xs text-gray-500">Caretaker</p>
+                </div>
+              </div>
+              <span className="text-xs px-2 py-1 bg-green-100 text-green-700 rounded-full">Active</span>
+            </div>
+
+            <div className="pt-2">
+              <Button variant="outline" className="w-full text-sm">Manage Connections</Button>
+            </div>
+          </div>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Recent Care Alerts</CardTitle>
+          </CardHeader>
+          <div className="flex flex-col items-center justify-center py-8 text-center">
+            <ShieldCheck className="w-12 h-12 text-emerald-200 mb-3" />
+            <p className="text-gray-900 font-medium">No alerts recently</p>
+            <p className="text-sm text-gray-500">Your health metrics are stable</p>
+          </div>
+        </Card>
+      </div>
     </div>
   );
 };

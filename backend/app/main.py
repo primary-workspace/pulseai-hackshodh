@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db, init_db
 from app.routes import health, analysis, escalation, users, webhook, auth, dashboard, oauth
+from app.routers import doctors, caretakers, relationships, notifications
 from app.services.synthetic_data import SyntheticDataGenerator
 from app.services.gemini_service import GeminiService
 
@@ -46,7 +47,7 @@ class Prompt(BaseModel):
     text: str
 
 
-# Include routers
+# Include core routers
 app.include_router(users.router)
 app.include_router(health.router)
 app.include_router(analysis.router)
@@ -55,6 +56,12 @@ app.include_router(webhook.router)    # Health Connect webhook
 app.include_router(auth.router)       # Authentication & API keys
 app.include_router(dashboard.router)  # Dashboard data endpoints
 app.include_router(oauth.router)      # Google OAuth & Drive ingestion
+
+# Include multi-role routers
+app.include_router(doctors.router)        # Doctor API endpoints
+app.include_router(caretakers.router)     # Caretaker API endpoints
+app.include_router(relationships.router)  # Patient-Doctor-Caretaker connections
+app.include_router(notifications.router)  # Notification system
 
 
 @app.on_event("startup")
@@ -76,8 +83,16 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
-    return {"status": "healthy"}
+    """Health check endpoint with database status"""
+    from app.database import is_using_fallback, get_database_info
+    
+    db_info = get_database_info()
+    
+    return {
+        "status": "healthy",
+        "database": db_info,
+        "warning": "Using local SQLite fallback - remote database unavailable" if is_using_fallback() else None
+    }
 
 
 @app.post("/generate")
